@@ -285,15 +285,17 @@
         100% { transform: scale(1.5); opacity: 0; }
       }
 
-      /* #074 滚动淡入加强：从下方 60px 处 0.9s 上移淡入，同时由 0.96 放大到 1，--d 控制依次延迟（0.15s 递增） */
-      .reveal {
+      /* #074 滚动淡入加强：从下方 60px 处 0.9s 上移淡入，同时由 0.96 放大到 1，--d 控制依次延迟（0.15s 递增）。
+         隐藏的起始状态只挂在 html.js 下：头部小脚本一跑就打标，主脚本随后接管淡入；
+         若主脚本迟迟没到（文件大、网速慢）或被拦，卡片保持可见，绝不出现「只剩标题没有卡片」。 */
+      html.js .reveal {
         opacity: 0;
         transform: translateY(60px) scale(.96);
         transition: opacity .9s ease var(--d, 0s), transform .9s ease var(--d, 0s), box-shadow .3s ease 0s;
       }
-      .reveal.in { opacity: 1; transform: translateY(0) scale(1); }
+      html.js .reveal.in { opacity: 1; transform: translateY(0) scale(1); }
       /* 淡入结束后清掉延迟，并把过渡切回悬停/倾斜用的短过渡 */
-      .reveal.done {
+      html.js .reveal.done {
         transition: opacity .3s ease 0s, transform .25s ease-out 0s, box-shadow .3s ease 0s;
       }
 
@@ -688,7 +690,7 @@
         .avatar-wrap::after { animation: none; opacity: 0; }
         .ripple { display: none; }
         .ref-card::after { display: none; }
-        .reveal { opacity: 1; transform: none; transition: none; }
+        html.js .reveal { opacity: 1; transform: none; transition: none; }
         .ref-card:hover { transform: none; }
         .person-card:hover, .article-card:hover, .fp-entry:hover { transform: none; }
         .person-card, .article-card { transition: none; }
@@ -697,8 +699,11 @@
       }
     </style>
     <script>
-      /* 渲染前先套用上次手动选的主题，避免闪烁；没选过则不设，跟随系统 */
+      /* 渲染前先套用上次手动选的主题，避免闪烁；没选过则不设，跟随系统。
+         同时给 <html> 打上 js 标记：卡片的「淡入前隐藏」只在带这个标记时生效，
+         这样万一主脚本还没加载完或没跑起来，卡片也直接可见，不会整片空白。 */
       (function () {
+        document.documentElement.classList.add("js");
         try {
           var t = window.localStorage.getItem("xiaoyang-theme");
           if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
@@ -743,7 +748,7 @@
           <span class="fp-entry-ic" aria-hidden="true">复</span>
           <span class="fp-entry-text">
             <span class="fp-entry-name">天下英雄如过江之鲫</span>
-            <span class="fp-entry-desc" id="fpEntryDesc">点开一位大佬，看他的全部文章，再点文章开始读。</span>
+            <span class="fp-entry-desc" id="fpEntryDesc">共 24 位大佬 · 129 篇文章，点开按人读。</span>
           </span>
           <span class="ref-go" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></span>
         </a>
@@ -916,10 +921,15 @@
           });
         });
 
-        /* ---------- #074 滚动淡入：进入视口时依次淡入 ---------- */
+        /* ---------- #074 滚动淡入：进入视口时依次淡入 ----------
+           提前量用固定像素（600px）而不是百分比：个别浏览器对百分比
+           rootMargin 的处理有差异，曾出现观察器迟迟不触发、卡片停在
+           不可见状态。再加一道兜底扫描：滚动、改尺寸、以及开页后两次
+           定时，把视口附近仍没被观察器点亮的卡片直接点亮。 */
         function initReveal() {
           var els = document.querySelectorAll(".reveal");
           function show(el) {
+            if (el.classList.contains("in")) return;
             el.classList.add("in");
             var d = parseFloat(window.getComputedStyle(el).getPropertyValue("--d")) || 0;
             /* 淡入（0.9s + 延迟）结束后切到悬停/倾斜用的短过渡 */
@@ -936,8 +946,26 @@
                 io.unobserve(entry.target);
               }
             });
-          }, { threshold: 0.12, rootMargin: "0px 0px 100% 0px" });
+          }, { threshold: 0.12, rootMargin: "0px 0px 600px 0px" });
           els.forEach(function (el) { io.observe(el); });
+          function sweep() {
+            var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+            els.forEach(function (el) {
+              if (el.classList.contains("in")) return;
+              var r = el.getBoundingClientRect();
+              if (r.top < vh + 600 && r.bottom > -600) { show(el); io.unobserve(el); }
+            });
+          }
+          var sweepQueued = false;
+          function queueSweep() {
+            if (sweepQueued) return;
+            sweepQueued = true;
+            setTimeout(function () { sweepQueued = false; sweep(); }, 120);
+          }
+          window.addEventListener("scroll", queueSweep, { passive: true });
+          window.addEventListener("resize", queueSweep);
+          setTimeout(sweep, 900);
+          setTimeout(sweep, 2500);
         }
 
         var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -5324,12 +5352,14 @@
           fpRoute();
         }
 
-        renderSocials();
-        initReveal();
-        initRipple();
-        initTilt();
-        initThemeToggle();
-        initFupan();
+        /* 每个初始化各自兜底：任何一个动效出问题，都不能连累卡片显示和合集打开 */
+        function safeInit(fn) { try { fn(); } catch (e) { /* 静默跳过坏掉的单个动效 */ } }
+        safeInit(initReveal);
+        safeInit(renderSocials);
+        safeInit(initRipple);
+        safeInit(initTilt);
+        safeInit(initThemeToggle);
+        safeInit(initFupan);
       })();
     </script>
   </body>
